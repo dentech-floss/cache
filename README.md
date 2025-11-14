@@ -206,11 +206,12 @@ userCache, err := cache.NewDistributedGeneric[*User](&cache.DistributedConfig{
     Client:            sharedClient,
     SerializationType: cache.SerializationJSON,
 })
-
+// handle error
 orderCache, err := cache.NewDistributedGeneric[*Order](&cache.DistributedConfig{
     Client:            sharedClient,
     SerializationType: cache.SerializationGob,
 })
+// handle error
 ```
 
 When a shared client is provided, the cache skips instrumentation and closing the client—allowing your application to manage its lifecycle centrally.
