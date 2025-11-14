@@ -13,29 +13,18 @@ import (
 
 // distributedCache is a distributed cache implementation for proto messages.
 type distributedCache[T any] struct {
-	client *redis.Client
+	client     redis.UniversalClient
+	ownsClient bool
 }
 
 // distributedGenericCache is a distributed cache implementation for any type.
 type distributedGenericCache[T any] struct {
-	client     *redis.Client
+	client     redis.UniversalClient
 	serializer Serializer
+	ownsClient bool
 }
 
-// NewDistributed creates a new distributed cache for proto messages.
-// This is a convenience function for creating distributed caches directly.
-func NewDistributed[T proto.Message](config *DistributedConfig) (Cache[T], error) {
-	return NewDistributedForProto[T](config)
-}
-
-// NewDistributedForProto creates a new distributed cache for proto messages.
-// This is an internal function used by the factory.
-func NewDistributedForProto[T proto.Message](config *DistributedConfig) (Cache[T], error) {
-	if config == nil {
-		return nil, errors.New("config cannot be nil")
-	}
-
-	// Set defaults
+func ensureDistributedDefaults(config *DistributedConfig) {
 	if config.PoolSize == 0 {
 		config.PoolSize = 10
 	}
@@ -53,6 +42,27 @@ func NewDistributedForProto[T proto.Message](config *DistributedConfig) (Cache[T
 	}
 	if config.WriteTimeout == 0 {
 		config.WriteTimeout = 3 * time.Second
+	}
+}
+
+func pingRedisClient(client redis.UniversalClient, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return client.Ping(ctx).Err()
+}
+
+func buildRedisClient(config *DistributedConfig) (redis.UniversalClient, bool, error) {
+	if config == nil {
+		return nil, false, errors.New("config cannot be nil")
+	}
+
+	ensureDistributedDefaults(config)
+
+	if config.Client != nil {
+		if err := pingRedisClient(config.Client, config.DialTimeout); err != nil {
+			return nil, false, err
+		}
+		return config.Client, false, nil
 	}
 
 	client := redis.NewClient(&redis.Options{
@@ -67,26 +77,45 @@ func NewDistributedForProto[T proto.Message](config *DistributedConfig) (Cache[T
 		WriteTimeout: config.WriteTimeout,
 	})
 
-	// Enable OpenTelemetry instrumentation
-	if config.EnableTracing || config.EnableMetrics {
+	// Enable OpenTelemetry instrumentation only when we own the client
+	if config.EnableTracing {
 		if err := redisotel.InstrumentTracing(client); err != nil {
-			return nil, err
+			client.Close()
+			return nil, false, err
 		}
+	}
+	if config.EnableMetrics {
 		if err := redisotel.InstrumentMetrics(client); err != nil {
-			return nil, err
+			client.Close()
+			return nil, false, err
 		}
 	}
 
-	// Test the connection
-	ctx, cancel := context.WithTimeout(context.Background(), config.DialTimeout)
-	defer cancel()
+	if err := pingRedisClient(client, config.DialTimeout); err != nil {
+		client.Close()
+		return nil, false, err
+	}
 
-	if err := client.Ping(ctx).Err(); err != nil {
+	return client, true, nil
+}
+
+// NewDistributed creates a new distributed cache for proto messages.
+// This is a convenience function for creating distributed caches directly.
+func NewDistributed[T proto.Message](config *DistributedConfig) (Cache[T], error) {
+	return NewDistributedForProto[T](config)
+}
+
+// NewDistributedForProto creates a new distributed cache for proto messages.
+// This is an internal function used by the factory.
+func NewDistributedForProto[T proto.Message](config *DistributedConfig) (Cache[T], error) {
+	client, ownsClient, err := buildRedisClient(config)
+	if err != nil {
 		return nil, err
 	}
 
 	return &distributedCache[T]{
-		client: client,
+		client:     client,
+		ownsClient: ownsClient,
 	}, nil
 }
 
@@ -95,26 +124,6 @@ func NewDistributedForProto[T proto.Message](config *DistributedConfig) (Cache[T
 func NewDistributedGeneric[T any](config *DistributedConfig) (Cache[T], error) {
 	if config == nil {
 		return nil, errors.New("config cannot be nil")
-	}
-
-	// Set defaults
-	if config.PoolSize == 0 {
-		config.PoolSize = 10
-	}
-	if config.MinIdleConns == 0 {
-		config.MinIdleConns = 5
-	}
-	if config.MaxRetries == 0 {
-		config.MaxRetries = 3
-	}
-	if config.DialTimeout == 0 {
-		config.DialTimeout = 5 * time.Second
-	}
-	if config.ReadTimeout == 0 {
-		config.ReadTimeout = 3 * time.Second
-	}
-	if config.WriteTimeout == 0 {
-		config.WriteTimeout = 3 * time.Second
 	}
 
 	// Set up serialization
@@ -135,39 +144,15 @@ func NewDistributedGeneric[T any](config *DistributedConfig) (Cache[T], error) {
 		}
 	}
 
-	client := redis.NewClient(&redis.Options{
-		Addr:         config.Addr,
-		Password:     config.Password,
-		DB:           config.DB,
-		PoolSize:     config.PoolSize,
-		MinIdleConns: config.MinIdleConns,
-		MaxRetries:   config.MaxRetries,
-		DialTimeout:  config.DialTimeout,
-		ReadTimeout:  config.ReadTimeout,
-		WriteTimeout: config.WriteTimeout,
-	})
-
-	// Enable OpenTelemetry instrumentation
-	if config.EnableTracing || config.EnableMetrics {
-		if err := redisotel.InstrumentTracing(client); err != nil {
-			return nil, err
-		}
-		if err := redisotel.InstrumentMetrics(client); err != nil {
-			return nil, err
-		}
-	}
-
-	// Test the connection
-	ctx, cancel := context.WithTimeout(context.Background(), config.DialTimeout)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
+	client, ownsClient, err := buildRedisClient(config)
+	if err != nil {
 		return nil, err
 	}
 
 	return &distributedGenericCache[T]{
 		client:     client,
 		serializer: serializer,
+		ownsClient: ownsClient,
 	}, nil
 }
 
@@ -183,58 +168,14 @@ func createDistributedCacheForProto[T any](config *DistributedConfig) (Cache[T],
 		return nil, errors.New("config cannot be nil")
 	}
 
-	// Set defaults
-	if config.PoolSize == 0 {
-		config.PoolSize = 10
-	}
-	if config.MinIdleConns == 0 {
-		config.MinIdleConns = 5
-	}
-	if config.MaxRetries == 0 {
-		config.MaxRetries = 3
-	}
-	if config.DialTimeout == 0 {
-		config.DialTimeout = 5 * time.Second
-	}
-	if config.ReadTimeout == 0 {
-		config.ReadTimeout = 3 * time.Second
-	}
-	if config.WriteTimeout == 0 {
-		config.WriteTimeout = 3 * time.Second
-	}
-
-	client := redis.NewClient(&redis.Options{
-		Addr:         config.Addr,
-		Password:     config.Password,
-		DB:           config.DB,
-		PoolSize:     config.PoolSize,
-		MinIdleConns: config.MinIdleConns,
-		MaxRetries:   config.MaxRetries,
-		DialTimeout:  config.DialTimeout,
-		ReadTimeout:  config.ReadTimeout,
-		WriteTimeout: config.WriteTimeout,
-	})
-
-	// Enable OpenTelemetry instrumentation
-	if config.EnableTracing || config.EnableMetrics {
-		if err := redisotel.InstrumentTracing(client); err != nil {
-			return nil, err
-		}
-		if err := redisotel.InstrumentMetrics(client); err != nil {
-			return nil, err
-		}
-	}
-
-	// Test the connection
-	ctx, cancel := context.WithTimeout(context.Background(), config.DialTimeout)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
+	client, ownsClient, err := buildRedisClient(config)
+	if err != nil {
 		return nil, err
 	}
 
 	return &distributedCache[T]{
-		client: client,
+		client:     client,
+		ownsClient: ownsClient,
 	}, nil
 }
 
@@ -302,7 +243,7 @@ func (c *distributedCache[T]) Delete(ctx context.Context, key string) error {
 }
 
 func (c *distributedCache[T]) Close() error {
-	if c.client != nil {
+	if c.client != nil && c.ownsClient {
 		return c.client.Close()
 	}
 	return nil
@@ -367,7 +308,7 @@ func (c *distributedGenericCache[T]) Delete(ctx context.Context, key string) err
 }
 
 func (c *distributedGenericCache[T]) Close() error {
-	if c.client != nil {
+	if c.client != nil && c.ownsClient {
 		return c.client.Close()
 	}
 	return nil

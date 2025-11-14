@@ -182,10 +182,41 @@ config := &cache.DistributedConfig{
     EnableTracing:     true,
     EnableMetrics:     true,
     SerializationType: cache.SerializationJSON, // or SerializationGob
+    Client:            nil, // Optional: reuse an existing redis.UniversalClient
 }
 ```
 
 **Note**: The distributed cache works with both Redis and Valkey servers. Simply point the `Addr` to your Redis or Valkey instance.
+
+### Sharing a Redis/Valkey Connection
+
+You can now supply an existing `redis.UniversalClient` (for example, a `*redis.Client` or `*redis.ClusterClient`) so multiple caches reuse the same connection pool:
+
+```go
+import (
+    "github.com/dentech-floss/cache"
+    "github.com/redis/go-redis/v9"
+)
+
+sharedClient := redis.NewClient(&redis.Options{
+    Addr: "localhost:6379",
+})
+
+userCache, err := cache.NewDistributedGeneric[*User](&cache.DistributedConfig{
+    Client:            sharedClient,
+    SerializationType: cache.SerializationJSON,
+})
+// handle error
+orderCache, err := cache.NewDistributedGeneric[*Order](&cache.DistributedConfig{
+    Client:            sharedClient,
+    SerializationType: cache.SerializationGob,
+})
+// handle error
+```
+
+When a shared client is provided, the cache skips instrumentation and closing the client—allowing your application to manage its lifecycle centrally.
+
+> **Note**: `EnableTracing` and `EnableMetrics` are ignored when `Client` is supplied, because the cache cannot safely instrument a shared client. Instrument the client before passing it to the cache if you need telemetry.
 
 ## Serialization Types
 

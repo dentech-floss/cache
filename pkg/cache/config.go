@@ -1,6 +1,10 @@
 package cache
 
-import "time"
+import (
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
 
 // Config holds common configuration for all cache types.
 type Config struct {
@@ -61,4 +65,11 @@ type DistributedConfig struct {
 
 	// Serializer allows custom serialization (overrides SerializationType if set)
 	Serializer Serializer
+
+	// Client allows providing a pre-configured Redis/Valkey client.
+	// When set, the cache will reuse this client instead of creating its own.
+	// The cache will not close the shared client when Close is called, and
+	// EnableTracing/EnableMetrics will be ignored (instrument shared clients
+	// yourself before passing them in).
+	Client redis.UniversalClient
 }
