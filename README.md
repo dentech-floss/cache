@@ -216,6 +216,8 @@ orderCache, err := cache.NewDistributedGeneric[*Order](&cache.DistributedConfig{
 
 When a shared client is provided, the cache skips instrumentation and closing the client—allowing your application to manage its lifecycle centrally.
 
+> **Note**: `EnableTracing` and `EnableMetrics` are ignored when `Client` is supplied, because the cache cannot safely instrument a shared client. Instrument the client before passing it to the cache if you need telemetry.
+
 ## Serialization Types
 
 - **Protobuf**: For protobuf messages (automatic detection)

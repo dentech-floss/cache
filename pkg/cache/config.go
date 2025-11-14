@@ -68,6 +68,8 @@ type DistributedConfig struct {
 
 	// Client allows providing a pre-configured Redis/Valkey client.
 	// When set, the cache will reuse this client instead of creating its own.
-	// The cache will not close the shared client when Close is called.
+	// The cache will not close the shared client when Close is called, and
+	// EnableTracing/EnableMetrics will be ignored (instrument shared clients
+	// yourself before passing them in).
 	Client redis.UniversalClient
 }
