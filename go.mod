@@ -6,7 +6,7 @@ require (
 	github.com/jellydator/ttlcache/v2 v2.11.1
 	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/testcontainers/testcontainers-go v0.44.0
+	github.com/testcontainers/testcontainers-go v0.45.0
 	google.golang.org/protobuf v1.36.12
 )
 
